@@ -37,7 +37,8 @@ MICROPROFILE_DEFINE(OpenGL_CacheManagement, "OpenGL", "Cache Mgmt", MP_RGB(100, 
 
 RasterizerOpenGL::RasterizerOpenGL()
     : shader_dirty(true), vertex_buffer(GL_ARRAY_BUFFER, VERTEX_BUFFER_SIZE),
-      uniform_buffer(GL_UNIFORM_BUFFER, UNIFORM_BUFFER_SIZE) {
+      uniform_buffer(GL_UNIFORM_BUFFER, UNIFORM_BUFFER_SIZE),
+      texture_buffer(GL_TEXTURE_BUFFER, TEXTURE_BUFFER_SIZE) {
     // Clipping plane 0 is always enabled for PICA fixed clip plane z <= 0
     state.clip_distance[0] = true;
 
@@ -1658,8 +1659,7 @@ void RasterizerOpenGL::SyncFogLUT() {
 
     if (new_data != fog_lut_data) {
         fog_lut_data = new_data;
-        glBindBuffer(GL_TEXTURE_BUFFER, fog_lut_buffer.handle);
-        glBufferSubData(GL_TEXTURE_BUFFER, 0, new_data.size() * sizeof(GLvec2), new_data.data());
+        UpdateTextureBuffer(fog_lut_buffer, 0, new_data.size() * sizeof(GLvec2), new_data.data());
     }
 }
 
@@ -1682,8 +1682,9 @@ void RasterizerOpenGL::SyncProcTexNoise() {
 }
 
 // helper function for SyncProcTexNoiseLUT/ColorMap/AlphaMap
-static void SyncProcTexValueLUT(const std::array<Pica::State::ProcTex::ValueEntry, 128>& lut,
-                                std::array<GLvec2, 128>& lut_data, GLuint buffer) {
+static void SyncProcTexValueLUT(RasterizerOpenGL* rasterizer,
+                                const std::array<Pica::State::ProcTex::ValueEntry, 128>& lut,
+                                std::array<GLvec2, 128>& lut_data, const OGLBuffer& buffer) {
     std::array<GLvec2, 128> new_data;
     std::transform(lut.begin(), lut.end(), new_data.begin(), [](const auto& entry) {
         return GLvec2{entry.ToFloat(), entry.DiffToFloat()};
@@ -1691,24 +1692,24 @@ static void SyncProcTexValueLUT(const std::array<Pica::State::ProcTex::ValueEntr
 
     if (new_data != lut_data) {
         lut_data = new_data;
-        glBindBuffer(GL_TEXTURE_BUFFER, buffer);
-        glBufferSubData(GL_TEXTURE_BUFFER, 0, new_data.size() * sizeof(GLvec2), new_data.data());
+        rasterizer->UpdateTextureBuffer(buffer, 0, new_data.size() * sizeof(GLvec2),
+                                        new_data.data());
     }
 }
 
 void RasterizerOpenGL::SyncProcTexNoiseLUT() {
-    SyncProcTexValueLUT(Pica::g_state.proctex.noise_table, proctex_noise_lut_data,
-                        proctex_noise_lut_buffer.handle);
+    SyncProcTexValueLUT(this, Pica::g_state.proctex.noise_table, proctex_noise_lut_data,
+                        proctex_noise_lut_buffer);
 }
 
 void RasterizerOpenGL::SyncProcTexColorMap() {
-    SyncProcTexValueLUT(Pica::g_state.proctex.color_map_table, proctex_color_map_data,
-                        proctex_color_map_buffer.handle);
+    SyncProcTexValueLUT(this, Pica::g_state.proctex.color_map_table, proctex_color_map_data,
+                        proctex_color_map_buffer);
 }
 
 void RasterizerOpenGL::SyncProcTexAlphaMap() {
-    SyncProcTexValueLUT(Pica::g_state.proctex.alpha_map_table, proctex_alpha_map_data,
-                        proctex_alpha_map_buffer.handle);
+    SyncProcTexValueLUT(this, Pica::g_state.proctex.alpha_map_table, proctex_alpha_map_data,
+                        proctex_alpha_map_buffer);
 }
 
 void RasterizerOpenGL::SyncProcTexLUT() {
@@ -1723,8 +1724,8 @@ void RasterizerOpenGL::SyncProcTexLUT() {
 
     if (new_data != proctex_lut_data) {
         proctex_lut_data = new_data;
-        glBindBuffer(GL_TEXTURE_BUFFER, proctex_lut_buffer.handle);
-        glBufferSubData(GL_TEXTURE_BUFFER, 0, new_data.size() * sizeof(GLvec4), new_data.data());
+        UpdateTextureBuffer(proctex_lut_buffer, 0, new_data.size() * sizeof(GLvec4),
+                            new_data.data());
     }
 }
 
@@ -1740,8 +1741,8 @@ void RasterizerOpenGL::SyncProcTexDiffLUT() {
 
     if (new_data != proctex_diff_lut_data) {
         proctex_diff_lut_data = new_data;
-        glBindBuffer(GL_TEXTURE_BUFFER, proctex_diff_lut_buffer.handle);
-        glBufferSubData(GL_TEXTURE_BUFFER, 0, new_data.size() * sizeof(GLvec4), new_data.data());
+        UpdateTextureBuffer(proctex_diff_lut_buffer, 0, new_data.size() * sizeof(GLvec4),
+                            new_data.data());
     }
 }
 
@@ -1851,9 +1852,8 @@ void RasterizerOpenGL::SyncLightingLUT(unsigned lut_index) {
 
     if (new_data != lighting_lut_data[lut_index]) {
         lighting_lut_data[lut_index] = new_data;
-        glBindBuffer(GL_TEXTURE_BUFFER, lighting_lut_buffer.handle);
-        glBufferSubData(GL_TEXTURE_BUFFER, lut_index * new_data.size() * sizeof(GLvec2),
-                        new_data.size() * sizeof(GLvec2), new_data.data());
+        UpdateTextureBuffer(lighting_lut_buffer, lut_index * new_data.size() * sizeof(GLvec2),
+                            new_data.size() * sizeof(GLvec2), new_data.data());
     }
 }
 
@@ -1983,4 +1983,21 @@ void RasterizerOpenGL::UploadUniforms(bool use_gs) {
     }
 
     uniform_buffer.Unmap(used_bytes);
+}
+
+void RasterizerOpenGL::UpdateTextureBuffer(const OGLBuffer& buffer, size_t offset, size_t size,
+                                           void* data) {
+    if (!GLAD_GL_ARB_copy_buffer || !GLAD_GL_ARB_direct_state_access) {
+        glBindBuffer(GL_TEXTURE_BUFFER, buffer.handle);
+        glBufferSubData(GL_TEXTURE_BUFFER, offset, size, data);
+        return;
+    }
+
+    u8* tbo;
+    GLintptr read_offset;
+    std::tie(tbo, read_offset, std::ignore) = texture_buffer.Map(size);
+    std::memcpy(tbo, data, size);
+    texture_buffer.Unmap(size);
+    glBindBuffer(GL_TEXTURE_BUFFER, texture_buffer.GetHandle());
+    glCopyNamedBufferSubData(texture_buffer.GetHandle(), buffer.handle, read_offset, offset, size);
 }

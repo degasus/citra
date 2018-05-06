@@ -220,6 +220,11 @@ private:
     /// Upload the uniform blocks to the uniform buffer object
     void UploadUniforms(bool use_gs);
 
+    /// Upload the texture buffer content
+public:
+    void UpdateTextureBuffer(const OGLBuffer& buffer, size_t offset, size_t size, void* data);
+
+private:
     OpenGLState state;
 
     RasterizerCacheOpenGL res_cache;
@@ -245,6 +250,7 @@ private:
     // They shall be big enough for about one frame.
     static constexpr size_t VERTEX_BUFFER_SIZE = 32 * 1024 * 1024;
     static constexpr size_t UNIFORM_BUFFER_SIZE = 2 * 1024 * 1024;
+    static constexpr size_t TEXTURE_BUFFER_SIZE = 32 * 1024 * 1024;
 
     OGLVertexArray sw_vao;
     OGLVertexArray hw_vao;
@@ -253,6 +259,7 @@ private:
     std::array<SamplerInfo, 3> texture_samplers;
     OGLStreamBuffer vertex_buffer;
     OGLStreamBuffer uniform_buffer;
+    OGLStreamBuffer texture_buffer;
     OGLFramebuffer framebuffer;
     GLint uniform_buffer_alignment;
     size_t uniform_size_aligned_vs;
